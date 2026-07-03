@@ -1,0 +1,129 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: 'AWS::Serverless-2016-10-31'
+Description: Identity Ping unified events deployment
+Parameters:
+  OwnerTeam:
+    Type: String
+    Default: dragon
+  SystemName:
+    Type: String
+    Default: identity-ping-unified-events-svc
+  Stage:
+    Type: String
+    Default: v1
+  Environment:
+    Type: String
+    Default: sandbox
+    AllowedValues:
+      - sandbox
+      - test3
+      - prod
+
+Mappings:
+  Fn::Transform:
+    Name: AWS::Include
+    Parameters:
+      Location: 's3://accolade-iam-action-templates-063473290800/iam_action_templates.yml'
+  EnvironmentDependentParams:
+    sandbox:
+      name: sandbox
+    test3:
+      name: test
+    prod:
+      name: prod
+
+
+Globals:
+  Function:
+    Timeout: 5
+    Runtime: nodejs22.x
+    MemorySize: 256
+    AutoPublishAlias: live # More info about Safe Deployments: https://github.com/awslabs/serverless-application-model/blob/master/docs/safe_lambda_deployments.rst
+    DeploymentPreference:
+      Type: AllAtOnce
+    Environment:
+      Variables:
+        ACCOLADE_ENVIRONMENT: !Ref Environment
+        ACCOLADE_OWNER: !Ref OwnerTeam
+        Environment: !Ref Environment
+    Tags:
+      "iwt:info:owner": !Ref OwnerTeam
+      "iwt:info:environment": !Ref Environment
+
+Resources:
+  IdentityPingUnifiedEventsFunction:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      Handler: index.handler
+      CodeUri: ./dist/
+      Description: Identity Ping unified events Lambda Function.
+      MemorySize: 256
+      FunctionName: !Join
+      - '-'
+      - - "identity-ping-unified-events-svc"
+        - !FindInMap [ EnvironmentDependentParams, !Ref Environment, name ]
+      # More info https://docs.aws.amazon.com/lambda/latest/dg/concurrent-executions.html
+      ReservedConcurrentExecutions: 5
+      Timeout: 60
+      KmsKeyArn: !GetAtt DefaultKMSKey.Arn
+      Policies:
+        - AWSLambdaVPCAccessExecutionRole
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: !Split [ ",", !FindInMap [ IAM, kms, readonly ] ]
+              Resource:
+                - !GetAtt DefaultKMSKey.Arn
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - cloudwatch:PutMetricData
+              Resource:
+                - "*"
+              Condition:
+                StringEquals:
+                  'cloudwatch:namespace': !Sub '${SystemName}/custom_metrics'
+
+  DefaultKMSKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub "alias/identity-ping-unified-events-key-${Environment}"
+      TargetKeyId: !Ref DefaultKMSKey
+
+  DefaultKMSKey:
+    Type: AWS::KMS::Key
+    Properties:
+      EnableKeyRotation: true
+      KeyPolicy:
+        Statement:
+          - Sid: 'Allow IAM permission usage'
+            Effect: Allow
+            Principal:
+              AWS:
+                - !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+                - !Sub 'arn:aws:iam::${AWS::AccountId}:role/tropopause-cloudformation-full-scope-role'
+                - !Sub 'arn:aws:iam::${AWS::AccountId}:role/tropopause-cloudformation-safe-scope-role'
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: 'Allow owner team to encrypt and decrypt'
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:role/user-${OwnerTeam}'
+            Action: !Split [",", !FindInMap [ IAM, kms, owner ]]
+            Resource: '*'
+
+
+  ConfigLambdaPermission:
+    Type: "AWS::Lambda::Permission"
+    DependsOn:
+      - IdentityPingUnifiedEventsFunction
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref IdentityPingUnifiedEventsFunction
+      Principal: events.amazonaws.com
+      SourceArn: !Join
+      - '/'
+      - - !Sub "arn:aws:events:us-east-1:${AWS::AccountId}:rule"
+        - !Join ['-',["identity-ping-events", !FindInMap [ EnvironmentDependentParams, !Ref Environment, name ]]]
+        - !Join ['-',["identity-ping-unified-event-trigger-rule",!FindInMap [ EnvironmentDependentParams, !Ref Environment, name ]]]

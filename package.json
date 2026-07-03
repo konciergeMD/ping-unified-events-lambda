@@ -1,0 +1,30 @@
+{
+  "name": "identity-ping-unified-events-service",
+  "version": "1.0.0",
+  "description": "Identity Ping Unified Events Service",
+  "main": "index.js",
+  "directories": {
+    "test": "test"
+  },
+  "type": "commonjs",
+  "scripts": {
+    "build-package": "npm install && npm run build && npm run postbuild",
+    "build": "./node_modules/typescript/bin/tsc --project tsconfig.json",
+    "postbuild": "cp package*.json dist && cd dist && npm ci --production",
+    "test": "mocha tests"
+  },
+  "dependencies": {
+    "aws-sdk": "^2.1502.0",
+    "@acp/common-logging": "^0.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.5.5",
+    "chai": "^5.1.1",
+    "istanbul": "^0.4.5",
+    "mocha": "^10.7.3",
+    "mocha-junit-and-console-reporter": "^1.6.0",
+    "typescript": "^5.6.2"
+  },
+  "author": "",
+  "license": "ISC"
+}
