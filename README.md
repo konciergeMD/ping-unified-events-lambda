@@ -4,7 +4,7 @@ Lambda used to receive log events from the Ping unified environment.
 
 ## Purpose
 
-Captures events from the PingOne "Unified Transcarent" environment
+Captures events from the PingOne "Unified" environment
 (test: `9221ad0f-1c2f-4873-b6b4-9ff0b8011c82`, prod: `c4d8d0fc-156e-4938-8671-b725f085d585`)
 and processes them for downstream consumption. Today it transforms and
 forwards login assertion events to a Mixpanel funnel, but the same
@@ -56,24 +56,43 @@ The pre-existing Firehose catch-all rule (dotted path above) continues to
 receive matching events independently; this Lambda's rule is additive, not a
 redirect.
 
+## Mixpanel
+
+The Lambda filters for `ASSERTION.CHECK_SUCCESS`/`FAILED`, transforms the event
+into a Mixpanel event body, and POSTs it to `https://api.mixpanel.com/import?strict=1`
+(auth: project token as the basic-auth username, empty password).
+Routing is by **Ping environment id** (see `src/config.ts`):
+
+| Ping environment id | Env name | Mixpanel project | SSM token parameter |
+|---|---|---|---|
+| `9221ad0f-…-9ff0b8011c82` | Non-Prod Unified | test | `/identity/ping-unified-events/mixpanel-token-nonprod` |
+| `c4d8d0fc-…-b725f085d585` | Prod Unified | prod | `/identity/ping-unified-events/mixpanel-token-prod` |
+
+Events from any other environment are ignored.
+
+### SSM parameters (create out of band, per account)
+
+The Mixpanel project token is **not** in the repo. Create it as a **SecureString**
+parameter using the AWS-managed `alias/aws/ssm` key in each account:
+
+```sh
+aws ssm put-parameter \
+  --name /identity/ping-unified-events/mixpanel-token-nonprod \
+  --type SecureString \
+  --value <mixpanel-project-token>
+```
+
+The Lambda's IAM policy (see `template.yml`) grants `ssm:GetParameter` on
+`/identity/ping-unified-events/*`.
+
 ## Open items / TODO
 
-1. Transform event → Mixpanel `/import` shape — blocked on capturing a real
-   `ASSERTION.CHECK_SUCCESS`/`FAILED` payload; field names are not yet
-   confirmed.
-2. POST to Mixpanel `/import`.
-3. Narrow the EventBridge rule to `ASSERTION.CHECK_SUCCESS`/`FAILED` only —
-   the rule currently catches all events for this Ping environment,
-   unfiltered by `action.type`, intentionally, until real field names are
-   confirmed.
-4. Capture a real `ASSERTION.CHECK_SUCCESS`/`FAILED` payload — trigger a real
-   login against the outbound SSO proxy app once this Lambda is deployed and
-   inspect what actually lands in `event.detail`.
-5. Confirm a correlation key — need a field on the real assertion event that
+1. Narrow the EventBridge rule to `ASSERTION.CHECK_SUCCESS`/`FAILED` only — the
+   rule currently catches all events for this Ping environment, unfiltered by
+   `action.type`.
+2. Create the **prod** SSM token parameter and confirm prod routing once the
+   prod Mixpanel key is available.
+3. Confirm a correlation key — need a field on the real assertion event that
    ties back to Okta's AuthnRequest ID (`InResponseTo`). Candidates:
    `correlationId`, `internalCorrelation.sessionId`. Needed to stitch the
    full login funnel per attempt.
-6. Confirm `actors.user` population on real end-user events (as opposed to
-   admin-triggered test events) — needed for Mixpanel's `distinct_id`.
-7. Wire up the Mixpanel project token via Secrets Manager or SSM Parameter
-   Store, not a plaintext env var.

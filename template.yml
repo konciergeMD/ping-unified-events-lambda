@@ -84,6 +84,13 @@ Resources:
               Condition:
                 StringEquals:
                   'cloudwatch:namespace': !Sub '${SystemName}/custom_metrics'
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - ssm:GetParameter
+              Resource:
+                - !Sub 'arn:aws:ssm:us-east-1:${AWS::AccountId}:parameter/identity/ping-unified-events/*'
 
   DefaultKMSKeyAlias:
     Type: AWS::KMS::Alias
