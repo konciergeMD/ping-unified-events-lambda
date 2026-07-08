@@ -1,16 +1,16 @@
 import { SSM } from 'aws-sdk';
 
 // Ping events forwarded to Mixpanel
-export const ASSERTION_TYPES = ['ASSERTION.CHECK_SUCCESS', 'ASSERTION.CHECK_FAILED'];
+export const ACCESS_EVENT_TYPES = ['USER.ACCESS_ALLOWED', 'USER.ACCESS_DENIED'];
 
-export function isAssertionEvent(event: any): boolean {
-  return ASSERTION_TYPES.includes(event?.action?.type);
+export function isAccessEvent(event: any): boolean {
+  return ACCESS_EVENT_TYPES.includes(event?.action?.type);
 }
 
 // transform a Ping log  into a Mixpanel /import event body.
 export function transformToMixpanel(event: any, environmentName: string | null = null) {
   const user = event.actors.user;
-  const app = event.resources[0];
+  const client = event.actors.client; // the requesting app (relying party)
 
   return {
     event: event.action.type,
@@ -21,14 +21,14 @@ export function transformToMixpanel(event: any, environmentName: string | null =
       $insert_id: event.id, // stable Ping event id doubles as the dedup key
 
       // requested attributes
-      environment_id: app.environment.id,
-      environment_name: environmentName ?? app.environment.name ?? null,
+      environment_id: user.environment.id,
+      environment_name: environmentName ?? null,
       user_ping_id: user.id,
-      user_name: user.name,
+      user_name: user.name, // opaque id, not necessarily an email
       action_type: event.action.type,
       action_description: event.action.description,
-      resource_name: app.name,
-      resource_id: app.id,
+      app_name: client.name,
+      app_id: client.id,
       result_status: event.result.status,
       ping_timestamp: event.recordedAt,
       correlation_id: event.correlationId

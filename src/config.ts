@@ -19,9 +19,9 @@ export const PING_ENVIRONMENTS: Record<string, PingEnv> = {
   }
 };
 
-// The Ping environment id lives on both the resource and the actor; they match.
+// The Ping environment id lives on both actors; they match.
 export function getPingEnvId(event: any): string | undefined {
-  return event?.resources?.[0]?.environment?.id ?? event?.actors?.user?.environment?.id;
+  return event?.actors?.user?.environment?.id ?? event?.actors?.client?.environment?.id;
 }
 
 export function resolvePingEnv(event: any): PingEnv | undefined {

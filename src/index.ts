@@ -1,6 +1,6 @@
 import { AcpAmpTransport, AlfLogger, AlfLoggerContextBuilder, LogFactory } from '@acp/common-logging';
 // getToken (SSM) temporarily unused — re-add when switching back to SSM.
-import { isAssertionEvent, sendToMixpanel, transformToMixpanel } from './transform';
+import { isAccessEvent, sendToMixpanel, transformToMixpanel } from './transform';
 import { resolvePingEnv } from './config';
 
 const logFactory = new LogFactory();
@@ -17,7 +17,7 @@ const logger = logFactory.buildLogger(AlfLogger, new AlfLoggerContextBuilder().b
 export const handler = async (event: any) => {
   logger.info(`Received Ping event: ${JSON.stringify(event)}`);
 
-  if (!isAssertionEvent(event)) {
+  if (!isAccessEvent(event)) {
     logger.info(`Ignoring other event type: ${event?.action?.type}`);
     return {
       statusCode: 200,

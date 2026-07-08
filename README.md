@@ -7,7 +7,7 @@ Lambda used to receive log events from the Ping unified environment.
 Captures events from the PingOne "Unified" environment
 (test: `9221ad0f-1c2f-4873-b6b4-9ff0b8011c82`, prod: `c4d8d0fc-156e-4938-8671-b725f085d585`)
 and processes them for downstream consumption. Today it transforms and
-forwards login assertion events to a Mixpanel funnel, but the same
+forwards user-access (SSO) events to a Mixpanel funnel, but the same
 capture-and-process pattern can serve future consumers as well.
 
 Deploys independently to both `test` and `prod` via the Jenkins pipeline
@@ -58,7 +58,7 @@ redirect.
 
 ## Mixpanel
 
-The Lambda filters for `ASSERTION.CHECK_SUCCESS`/`FAILED`, transforms the event
+The Lambda filters for `USER.ACCESS_ALLOWED`/`USER.ACCESS_DENIED`, transforms the event
 into a Mixpanel event body, and POSTs it to `https://api.mixpanel.com/import?strict=1`
 (auth: project token as the basic-auth username, empty password).
 Routing is by **Ping environment id** (see `src/config.ts`):
@@ -87,12 +87,12 @@ The Lambda's IAM policy (see `template.yml`) grants `ssm:GetParameter` on
 
 ## Open items / TODO
 
-1. Narrow the EventBridge rule to `ASSERTION.CHECK_SUCCESS`/`FAILED` only — the
+1. Narrow the EventBridge rule to `USER.ACCESS_ALLOWED`/`USER.ACCESS_DENIED` only — the
    rule currently catches all events for this Ping environment, unfiltered by
    `action.type`.
 2. Create the **prod** SSM token parameter and confirm prod routing once the
    prod Mixpanel key is available.
-3. Confirm a correlation key — need a field on the real assertion event that
+3. Confirm a correlation key — need a field on the real access event that
    ties back to Okta's AuthnRequest ID (`InResponseTo`). Candidates:
    `correlationId`, `internalCorrelation.sessionId`. Needed to stitch the
    full login funnel per attempt.
