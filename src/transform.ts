@@ -24,7 +24,7 @@ export function transformToMixpanel(event: any, environmentName: string | null =
       environment_id: user.environment.id,
       environment_name: environmentName ?? null,
       user_ping_id: user.id,
-      user_name: user.name, // opaque id, not necessarily an email
+      // user_name: user.name, // opaque id, not necessarily an email
       action_type: event.action.type,
       action_description: event.action.description,
       app_name: client.name,
