@@ -13,11 +13,13 @@ export function transformToMixpanel(event: any, environmentName: string | null =
   const client = event.actors.client; // the requesting app (relying party)
 
   return {
-    event: event.action.type,
+    event: `PING.${event.action.type}`,
     properties: {
       // Mixpanel required fields
       time: Math.floor(Date.parse(event.recordedAt) / 1000),
-      distinct_id: user.id, // Ping id
+      // correlationId is stable across the events in one flow
+      // Okta groups login by externalSessionId.
+      distinct_id: event.correlationId ?? event.internalCorrelation?.transactionId ?? user.id,
       $insert_id: event.id, // stable Ping event id doubles as the dedup key
 
       // requested attributes
