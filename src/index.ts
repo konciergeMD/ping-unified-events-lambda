@@ -34,7 +34,7 @@ export const handler = async (event: any) => {
     };
   }
 
-  const mixpanelBody = transformToMixpanel(event, pingEnv.name);
+  const mixpanelBody = transformToMixpanel(event, pingEnv);
   logger.info(`Transformed event: ${JSON.stringify(mixpanelBody)}`);
 
   try {

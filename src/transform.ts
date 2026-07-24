@@ -1,36 +1,59 @@
 import { SSM } from 'aws-sdk';
+import { Direction, PingEnv, directionByAppId } from './config';
 
 // Ping events forwarded to Mixpanel
+//'USER.ACCESS_ALLOWED', 'USER.ACCESS_DENIED' - access to SP application (for OB, user has valid session and passed access controls)
+// FLOW.CREATED, FLOW.UPDATED, FLOW.DELETED - user journey through auth flow?
+// user.session.created - new session started for user in env
 export const ACCESS_EVENT_TYPES = ['USER.ACCESS_ALLOWED', 'USER.ACCESS_DENIED'];
 
 export function isAccessEvent(event: any): boolean {
   return ACCESS_EVENT_TYPES.includes(event?.action?.type);
 }
 
+type ResolvedDirection = Direction | 'unable to determine direction';
+
+// ACCESS events resource is the app (actors.client) - Direction is determined by matching the id against the configured inbound/outbound apps
+// outboundApp (Ping app that calls back to Okta) → outbound AND   - inboundApp  (Ping app that calls to the portal) → inbound
+// an unmatched app id is reported as unknown (event hook filters app so unlikely)
+function resolveDirection(appId: string | undefined, pingEnv?: PingEnv): ResolvedDirection {
+  if (pingEnv && appId) {
+    const byId = directionByAppId(pingEnv);
+    if (byId[appId]) {
+      return byId[appId];
+    }
+  }
+  return 'unable to determine direction';
+}
+
 // transform a Ping log  into a Mixpanel /import event body.
-export function transformToMixpanel(event: any, environmentName: string | null = null) {
+export function transformToMixpanel(event: any, pingEnv?: PingEnv) {
   const user = event.actors.user;
   const client = event.actors.client; // the requesting app (relying party)
 
+  const direction = resolveDirection(client?.id, pingEnv);
+
   return {
-    event: `PING.${event.action.type}`,
+    // SYSTEM.DIRECTION.ACTION_TYPE
+    event: `PING.${direction}.${event.action.type}`,
     properties: {
       // Mixpanel required fields
       time: Math.floor(Date.parse(event.recordedAt) / 1000),
-      // correlationId is stable across the events in one flow
-      // Okta groups login by externalSessionId.
+      // correlationId is stable across the events in one flow (Okta groups login by externalSessionId)
       distinct_id: event.correlationId ?? event.internalCorrelation?.transactionId ?? user.id,
       $insert_id: event.id, // stable Ping event id doubles as the dedup key
 
       // requested attributes
       environment_id: user.environment.id,
-      environment_name: environmentName ?? null,
+      environment_name: pingEnv?.name ?? null,
       user_ping_id: user.id,
       // user_name: user.name, // opaque id, not necessarily an email
       action_type: event.action.type,
       action_description: event.action.description,
-      app_name: client.name,
-      app_id: client.id,
+      direction,
+      // The accessed resource on an ACCESS event is the service-provider app.
+      app_name: client?.name ?? null,
+      app_id: client?.id ?? null,
       result_status: event.result.status,
       ping_timestamp: event.recordedAt,
       correlation_id: event.correlationId
