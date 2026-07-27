@@ -7,8 +7,8 @@ export interface PingEnv {
   tokenParam: string;
   // TEMP: hardcoded token until SSM is set up. Test project only. Move to SSM.
   token?: string;
-  outboundApp: string;
-  inboundApp: string;
+  outboundApps: string[];
+  inboundApps: string[];
 }
 
 export const PING_ENVIRONMENTS: Record<string, PingEnv> = {
@@ -16,16 +16,20 @@ export const PING_ENVIRONMENTS: Record<string, PingEnv> = {
     name: 'Non-Prod Unified',
     tokenParam: '/identity/ping-unified-events/mixpanel-token-nonprod',
     token: '1aed6df8282444d208215485628f4d6f',
-    // if accessed resource is this app, the event is an outbound sso (app calls back to okta)
-    outboundApp: '71d1203c-28c0-4814-8e79-2259d261b23e',
-    // if accessed resource is this app, the event is an inbound sso (app goes to portal)
-    inboundApp: '5566e1f4-49cb-4a99-9043-d43b729f7671'
+    // if accessed resource is one of these apps, the event is an outbound sso (app calls back to okta)
+    outboundApps: ['71d1203c-28c0-4814-8e79-2259d261b23e'],
+    // if accessed resource is one of these apps, the event is an inbound sso (app goes to portal)
+    inboundApps: [
+      '6563a2eb-cfcb-4d5c-acc7-000551d6f7be', // Android
+      '5566e1f4-49cb-4a99-9043-d43b729f7671', // Web
+      '58e7d1ac-1b67-4ed9-8713-27d749b414cb'  // iOS
+    ]
   },
   'c4d8d0fc-156e-4938-8671-b725f085d585': {
     name: 'Prod Unified',
     tokenParam: '/identity/ping-unified-events/mixpanel-token-prod',
-    outboundApp: 'REPLACE_ME',
-    inboundApp: 'REPLACE_ME'
+    outboundApps: [],
+    inboundApps: []
   }
 };
 
@@ -42,7 +46,7 @@ export function resolvePingEnv(event: any): PingEnv | undefined {
 // app-id → direction
 export function directionByAppId(env: PingEnv): Record<string, Direction> {
   const map: Record<string, Direction> = {};
-  if (env.outboundApp) map[env.outboundApp] = 'outbound';
-  if (env.inboundApp) map[env.inboundApp] = 'inbound';
+  for (const id of env.outboundApps) map[id] = 'outbound';
+  for (const id of env.inboundApps) map[id] = 'inbound';
   return map;
 }
