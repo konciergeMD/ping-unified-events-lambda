@@ -26,10 +26,38 @@ function resolveDirection(appId: string | undefined, pingEnv?: PingEnv): Resolve
   return 'unable to determine direction';
 }
 
+
+// Use Ping ID to find ssoUUID 
+export async function fetchPingUser(logEvent: any, env: PingEnv, token: string | null): Promise<string | null> {
+  const user = logEvent?.actors?.user.id;
+  if (!user || !token) {
+    return 'UNABLE_TO_FIND_PING_USER';
+  }
+  const res = await fetch(
+    `https://api.pingone.com/v1/environments/${env.id}/users/${user}`,
+    {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${token}` }
+    }
+  );
+  if (!res.ok) {
+    console.error(`PingOne user lookup failed for ${user}: HTTP ${res.status}`);
+    return 'unableToGetPingId';
+  }
+
+  // GET /users/{id} returns the single user resource directly (not an _embedded collection).
+  const json: any = await res.json();
+  return json?.ssoUUID ?? 'UNABLE_TO_FIND_SSO_UUID';
+}
+
+
+
+
 // transform a Ping log  into a Mixpanel /import event body.
-export function transformToMixpanel(event: any, pingEnv?: PingEnv) {
+export async function transformToMixpanel(event: any, pingEnv?: PingEnv, pingToken?: string | null): Promise<any> {
   const user = event.actors.user;
   const client = event.actors.client; // the requesting app (relying party)
+  const ssoUUID = await fetchPingUser(event, pingEnv!, pingToken!); 
 
   const direction = resolveDirection(client?.id, pingEnv);
 
@@ -47,6 +75,7 @@ export function transformToMixpanel(event: any, pingEnv?: PingEnv) {
       environment_id: user.environment.id,
       environment_name: pingEnv?.name ?? null,
       user_ping_id: user.id,
+      ssoUUID: ssoUUID ?? 'UNABLE_TO_FIND_SSO_UUID',
       // user_name: user.name, // opaque id, not necessarily an email
       action_type: event.action.type,
       action_description: event.action.description,

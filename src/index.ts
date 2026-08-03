@@ -2,6 +2,7 @@ import { AcpAmpTransport, AlfLogger, AlfLoggerContextBuilder, LogFactory } from 
 // getToken (SSM) temporarily unused — re-add when switching back to SSM.
 import { isAccessEvent, sendToMixpanel, transformToMixpanel } from './transform';
 import { resolvePingEnv } from './config';
+import { fetchPingToken } from './util';
 
 const logFactory = new LogFactory();
 const acpTransport = new AcpAmpTransport({
@@ -34,7 +35,10 @@ export const handler = async (event: any) => {
     };
   }
 
-  const mixpanelBody = transformToMixpanel(event, pingEnv);
+    // Fetch the PingOne worker token once per invocation and reuse it for every lookup.
+  const pingToken = await fetchPingToken(pingEnv);
+
+  const mixpanelBody = await transformToMixpanel(event, pingEnv, pingToken);
   logger.info(`Transformed event: ${JSON.stringify(mixpanelBody)}`);
 
   try {
