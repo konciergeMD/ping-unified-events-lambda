@@ -1,7 +1,6 @@
 import { AcpAmpTransport, AlfLogger, AlfLoggerContextBuilder, LogFactory } from '@acp/common-logging';
-// getToken (SSM) temporarily unused — re-add when switching back to SSM.
 import { isAccessEvent, sendToMixpanel, transformToMixpanel } from './transform';
-import { resolvePingEnv } from './config';
+import { loadPingEnv, PingEnv } from './config';
 import { fetchPingToken } from './util';
 
 const logFactory = new LogFactory();
@@ -26,7 +25,17 @@ export const handler = async (event: any) => {
     };
   }
 
-  const pingEnv = resolvePingEnv(event);
+  let pingEnv: PingEnv | undefined;
+  try {
+    pingEnv = await loadPingEnv(event);
+  } catch (err) {
+    // Can't read the secret -> 500 so source retries (fail closed)
+    logger.error(`Failed to load config/secrets for '${process.env.Environment}': ${err}`);
+    return {
+      statusCode: 500,
+      body: JSON.stringify({ message: 'Not configured' })
+    };
+  }
   if (!pingEnv) {
     logger.info(`Ignoring event from unrecognized Ping environment`);
     return {
@@ -35,15 +44,12 @@ export const handler = async (event: any) => {
     };
   }
 
-    // Fetch the PingOne worker token once per invocation and reuse it for every lookup.
   const pingToken = await fetchPingToken(pingEnv);
 
   const mixpanelBody = await transformToMixpanel(event, pingEnv, pingToken);
   logger.info(`Transformed event: ${JSON.stringify(mixpanelBody)}`);
 
   try {
-    // TODO: switch back to SSM once the parameter is set up.
-    // const token = await getToken(pingEnv.tokenParam);
     const token = pingEnv.token;
     if (!token) {
       throw new Error(`No Mixpanel token configured for ${pingEnv.name}`);

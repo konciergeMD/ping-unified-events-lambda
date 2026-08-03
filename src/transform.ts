@@ -1,10 +1,9 @@
-import { SSM } from 'aws-sdk';
 import { Direction, PingEnv, directionByAppId } from './config';
 
-// Ping events forwarded to Mixpanel
 //'USER.ACCESS_ALLOWED', 'USER.ACCESS_DENIED' - access to SP application (for OB, user has valid session and passed access controls)
 // FLOW.CREATED, FLOW.UPDATED, FLOW.DELETED - user journey through auth flow?
 // user.session.created - new session started for user in env
+
 export const ACCESS_EVENT_TYPES = ['USER.ACCESS_ALLOWED', 'USER.ACCESS_DENIED'];
 
 export function isAccessEvent(event: any): boolean {
@@ -45,7 +44,6 @@ export async function fetchPingUser(logEvent: any, env: PingEnv, token: string |
     return 'unableToGetPingId';
   }
 
-  // GET /users/{id} returns the single user resource directly (not an _embedded collection).
   const json: any = await res.json();
   return json?.ssoUUID ?? 'UNABLE_TO_FIND_SSO_UUID';
 }
@@ -90,29 +88,10 @@ export async function transformToMixpanel(event: any, pingEnv?: PingEnv, pingTok
   };
 }
 
-const ssm = new SSM();
-const tokenCache: Record<string, string> = {};
-
 // strict=1 makes Mixpanel validate and return per-record error details.
 const MIXPANEL_IMPORT_URL = 'https://api.mixpanel.com/import?strict=1';
 
-// get a Mixpanel token from SSM SecureString param. 
-export async function getToken(paramName: string): Promise<string> {
-  if (tokenCache[paramName]) {
-    return tokenCache[paramName];
-  }
-
-  const result = await ssm.getParameter({ Name: paramName, WithDecryption: true }).promise();
-  const token = result.Parameter?.Value;
-  if (!token) {
-    throw new Error(`SSM parameter ${paramName} has no value`);
-  }
-
-  tokenCache[paramName] = token;
-  return token;
-}
-
-// POST an event to Mixpanel 
+// POST an event to Mixpanel
 export async function sendToMixpanel(event: unknown, token: string): Promise<void> {
   const auth = Buffer.from(`${token}:`).toString('base64');
   const response = await fetch(MIXPANEL_IMPORT_URL, {

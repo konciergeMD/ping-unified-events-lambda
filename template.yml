@@ -84,13 +84,15 @@ Resources:
               Condition:
                 StringEquals:
                   'cloudwatch:namespace': !Sub '${SystemName}/custom_metrics'
+        # shared unified-migration secret for this env (JSON, shared with the Okta lambda).
+        # scope by name pattern - account/region come from the deploy target and '*' is the 6 char suffix Secrets Manager adds
         - Version: '2012-10-17'
           Statement:
             - Effect: Allow
               Action:
-                - ssm:GetParameter
+                - secretsmanager:GetSecretValue
               Resource:
-                - !Sub 'arn:aws:ssm:us-east-1:${AWS::AccountId}:parameter/identity/ping-unified-events/*'
+                - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:/identity/lambda/unified-migration-event-svc/*'
 
   DefaultKMSKeyAlias:
     Type: AWS::KMS::Alias

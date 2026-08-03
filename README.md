@@ -63,35 +63,55 @@ into a Mixpanel event body, and POSTs it to `https://api.mixpanel.com/import?str
 (auth: project token as the basic-auth username, empty password).
 Routing is by **Ping environment id** (see `src/config.ts`):
 
-| Ping environment id | Env name | Mixpanel project | SSM token parameter |
+| Ping environment id | Env name | Mixpanel project | Secrets Manager secret |
 |---|---|---|---|
-| `9221ad0f-…-9ff0b8011c82` | Non-Prod Unified | test | `/identity/ping-unified-events/mixpanel-token-nonprod` |
-| `c4d8d0fc-…-b725f085d585` | Prod Unified | prod | `/identity/ping-unified-events/mixpanel-token-prod` |
+| `9221ad0f-…-9ff0b8011c82` | Non-Prod Unified | test | `/identity/lambda/unified-migration-event-svc/test` |
+| `c4d8d0fc-…-b725f085d585` | Prod Unified | prod | `/identity/lambda/unified-migration-event-svc/prod` |
 
 Events from any other environment are ignored.
 
-### SSM parameters (create out of band, per account)
+### Secrets (AWS Secrets Manager)
 
-The Mixpanel project token is **not** in the repo. Create it as a **SecureString**
-parameter using the AWS-managed `alias/aws/ssm` key in each account:
+Secret values — the Mixpanel project token (`mixpanelToken`) and the PingOne
+worker-app client secret (`pingClientSecret`) — are **not** in the repo. They
+live in a single JSON secret **per environment**, in `us-east-1`, **shared with
+the Okta unified-migration lambda**:
 
-```sh
-aws ssm put-parameter \
-  --name /identity/ping-unified-events/mixpanel-token-nonprod \
-  --type SecureString \
-  --value <mixpanel-project-token>
+```json
+{
+  "mixpanelToken": "...",
+  "oktaToken": "SSWS ...",
+  "pingClientSecret": "...",
+  "hookSecret": "..."
+}
 ```
 
-The Lambda's IAM policy (see `template.yml`) grants `ssm:GetParameter` on
-`/identity/ping-unified-events/*`.
+This lambda reads only `mixpanelToken` and `pingClientSecret`; the loader merges
+them into the env config once per cold start and caches the result
+(`loadPingEnv()` in `src/config.ts`).
+
+Because the secret is shared, treat the JSON as a contract: any
+`put-secret-value` must include the **full object** (all keys) or you'll wipe the
+Okta lambda's keys — there is no per-key update.
+
+```sh
+aws secretsmanager get-secret-value \
+  --region us-east-1 \
+  --secret-id /identity/lambda/unified-migration-event-svc/test \
+  --query SecretString --output text
+```
+
+The Lambda's IAM policy (see `template.yml`) grants `secretsmanager:GetSecretValue`
+on `/identity/lambda/unified-migration-event-svc/*`.
 
 ## Open items / TODO
 
 1. Narrow the EventBridge rule to `USER.ACCESS_ALLOWED`/`USER.ACCESS_DENIED` only — the
    rule currently catches all events for this Ping environment, unfiltered by
    `action.type`.
-2. Create the **prod** SSM token parameter and confirm prod routing once the
-   prod Mixpanel key is available.
+2. Ensure the **prod** Secrets Manager secret
+   (`/identity/lambda/unified-migration-event-svc/prod`, account `063473290800`)
+   exists and confirm prod routing once the prod Mixpanel key is available.
 3. Confirm a correlation key — need a field on the real access event that
    ties back to Okta's AuthnRequest ID (`InResponseTo`). Candidates:
    `correlationId`, `internalCorrelation.sessionId`. Needed to stitch the
