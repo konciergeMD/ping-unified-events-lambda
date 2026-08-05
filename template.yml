@@ -57,6 +57,9 @@ Resources:
       Handler: index.handler
       CodeUri: ./dist/
       Description: Identity Ping unified events Lambda Function.
+      Environment:
+        Variables:
+          PING_TOKEN_PARAM_PREFIX: /identity/lambda/ping-unified-events-svc/ping-token
       MemorySize: 256
       FunctionName: !Join
       - '-'
@@ -93,6 +96,15 @@ Resources:
                 - secretsmanager:GetSecretValue
               Resource:
                 - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:/identity/lambda/unified-migration-event-svc/*'
+        # Shared cache for the Ping token (SecureString, one param per Ping env)
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - ssm:GetParameter
+                - ssm:PutParameter
+              Resource:
+                - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/identity/lambda/ping-unified-events-svc/ping-token/*'
 
   DefaultKMSKeyAlias:
     Type: AWS::KMS::Alias

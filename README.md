@@ -68,6 +68,34 @@ aws secretsmanager get-secret-value \
 The Lambda's IAM policy (see `template.yml`) grants `secretsmanager:GetSecretValue`
 on `/identity/lambda/unified-migration-event-svc/*`.
 
+### PingOne token cache (SSM Parameter Store)
+
+To look up the user's `ssoUUID`, the Lambda needs a PingOne `client_credentials`
+access token. That token has a real TTL, so instead of
+fetching one per event, `fetchPingToken` (`src/util.ts`) caches it in two layers:
+
+- **warm-container memory:** a module-scope map, reused for the life of the
+  execution environment.
+- **SSM Parameter Store (SecureString):** shared across all concurrent
+  containers, so a token fetched by one is reused by the others. One parameter
+  per Ping environment id:
+
+```sh
+aws ssm get-parameter \
+  --region us-east-1 \
+  --name /identity/lambda/ping-unified-events-svc/ping-token/<pingEnvId> \
+  --with-decryption --query Parameter.Value --output text
+```
+
+On a miss/near-expiry a single caller gets a new token from PingOne and
+writes it to Parameter Store. PingOne token calls drop from one-per-event to
+roughly one per TTL window.
+
+The parameter is **created on first write** (`PutParameter`, `Overwrite=true`) —
+nothing to pre-provision. The IAM policy grants `ssm:GetParameter`/`ssm:PutParameter`
+on `/identity/lambda/ping-unified-events-svc/ping-token/*`, and the value is
+encrypted with the default `alias/aws/ssm` key.
+
 ## Open items / TODO
 
 1. Narrow the EventBridge rule to `USER.ACCESS_ALLOWED`/`USER.ACCESS_DENIED` only — the

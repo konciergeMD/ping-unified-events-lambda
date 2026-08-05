@@ -65,8 +65,10 @@ export function directionByAppId(env: PingEnv): Record<string, Direction> {
   return map;
 }
 
+// declared at module scope, run once per warm container
 const secretsClient = new SecretsManager();
 // Cache the merged env per Ping env id to limmit calls if needed
+// declared at module scope, run once per warm container
 const cachedEnvById: Record<string, PingEnv> = {};
 
 interface PingSecret {
@@ -93,7 +95,7 @@ export async function loadPingEnv(event: any): Promise<PingEnv | undefined> {
   const merged: PingEnv = {
     ...base,
     token: secret.mixpanelToken,
-    pingClientSecret: secret.pingClientSecret ?? null
+    pingClientSecret: secret.pingClientSecret ?? null //could chace null if not fetched and cause issues for multiple runs - should retry?
   };
   cachedEnvById[base.id] = merged;
   return merged;
