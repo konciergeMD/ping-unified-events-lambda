@@ -21,15 +21,20 @@ export interface PingEnv {
 // Non-secret config
 export const PING_ENVIRONMENTS: Record<string, PingEnv> = {
   test3: {
+    // "Non-Prod Unified" — the env this lambda monitors. (Note: 470ae5bd-… "SSO Partner Test - Unified Transcarent" is a separate test-IdP env used to originate inbound, not this one.)
     id: '9221ad0f-1c2f-4873-b6b4-9ff0b8011c82',
     name: 'Non-Prod Unified',
     secretId: '/identity/lambda/unified-migration-event-svc/test',
     // if accessed resource is one of these apps, the event is an outbound sso (app calls back to okta)
-    outboundApps: ['71d1203c-28c0-4814-8e79-2259d261b23e'],
+    outboundApps: [
+      '71d1203c-28c0-4814-8e79-2259d261b23e', // legacy/unverified — kept, harmless if unused
+      '5666a895-f092-4658-a851-9d5aa458a65b' // TC Okta Outbound SSO (Ping SAML app) — the Ping→Okta outbound federation app
+    ],
     // if accessed resource is one of these apps, the event is an inbound sso (app goes to portal)
     inboundApps: [
+      '60e1487c-366f-4148-a20f-40ba6f2bcc2e', // TC Okta (Ping external IdP) — the Okta→Ping inbound federation object
       '6563a2eb-cfcb-4d5c-acc7-000551d6f7be', // Android
-      '5566e1f4-49cb-4a99-9043-d43b729f7671', // Web
+      '5566e1f4-49cb-4a99-9043-d43b729f7671', // Web (Unified Transcarent Web App)
       '58e7d1ac-1b67-4ed9-8713-27d749b414cb'  // iOS
     ],
     pingClientId: '23b05b34-f49c-468c-bd25-094ce833fe87'

@@ -98,6 +98,13 @@ encrypted with the default `alias/aws/ssm` key.
 
 ## Open items / TODO
 
+0. **Unify the SSO identifier property + distinct_id.** This lambda emits `ssoUUID`
+   (camelCase) while the Okta lambda emits `sso_uuid` (snake_case) for the same value.
+   Standardize both on **`sso_uuid`** (rename here in `transform.ts`), and set
+   `distinct_id = sso_uuid` so events tie to one identity — keeping `correlation_id`
+   as a property for the session trail. (Okta lambda needs the matching
+   `distinct_id = sso_uuid` change; it already uses `sso_uuid`.) The test event
+   generator (`tests/gen-fake-events.js`) already does this.
 1. Narrow the EventBridge rule to `USER.ACCESS_ALLOWED`/`USER.ACCESS_DENIED` only — the
    rule currently catches all events for this Ping environment, unfiltered by
    `action.type`.
