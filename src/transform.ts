@@ -1,16 +1,28 @@
 import { Direction, PingEnv, directionByAppId } from './config';
 
-//'USER.ACCESS_ALLOWED', 'USER.ACCESS_DENIED' - access to SP application (for OB, user has valid session and passed access controls)
-// FLOW.CREATED, FLOW.UPDATED, FLOW.DELETED - user journey through auth flow?
-// user.session.created - new session started for user in env
+// FLOW.CREATED ("Sign-on flow started") the ONLY signal that outbound attempt reached ping
+// Okta doesnt log unitl getting a response, so abandoned at Ping leaves no proof 
+// FLOW.DELETED ("Sign-on flow finished") — result.status/description carry is outcome
+//
+// FLOW.UPDATED ("Sign-on flow continued") is deliberately NOT tracked: real audit rows show
+// it duplicating FLOW.DELETED in the same second with an identical description.
+// check this - do all send both?
+//
+// USER.ACCESS_* confirm the app was actually reached, fire when a user reaches the app on an existing session with no sign-on flow 
 
-export const ACCESS_EVENT_TYPES = ['USER.ACCESS_ALLOWED', 'USER.ACCESS_DENIED'];
+export const TRACKED_EVENT_TYPES = [
+  'FLOW.CREATED',
+  'FLOW.DELETED',
+  'USER.ACCESS_ALLOWED',
+  'USER.ACCESS_DENIED'
+];
 
-export function isAccessEvent(event: any): boolean {
-  return ACCESS_EVENT_TYPES.includes(event?.action?.type);
+export function isTrackedEvent(event: any): boolean {
+  return TRACKED_EVENT_TYPES.includes(event?.action?.type);
 }
 
-type ResolvedDirection = Direction | 'unable to determine direction';
+// Kept a single token so the Mixpanel event name stays dot-delimited with no spaces.
+type ResolvedDirection = Direction | 'unknown_direction';
 
 // ACCESS events resource is the app (actors.client) - Direction is determined by matching the id against the configured inbound/outbound apps
 // outboundApp (Ping app that calls back to Okta) → outbound AND   - inboundApp  (Ping app that calls to the portal) → inbound
@@ -22,15 +34,21 @@ function resolveDirection(appId: string | undefined, pingEnv?: PingEnv): Resolve
       return byId[appId];
     }
   }
-  return 'unable to determine direction';
+  return 'unknown_direction';
 }
 
+// fill in for a failed fetch sso_uuid. 
+const NO_USER = 'unable to find ping user';
+const LOOKUP_FAILED = 'unable to fetch ping user';
+const NO_SSO_UUID = 'unable to find sso_uuid';
+const SSO_UUID_SENTINELS = [NO_USER, LOOKUP_FAILED, NO_SSO_UUID];
 
-// Use Ping ID to find ssoUUID 
-export async function fetchPingUser(logEvent: any, env: PingEnv, token: string | null): Promise<string | null> {
-  const user = logEvent?.actors?.user.id;
+// Use Ping ID to find sso_uuid.
+// FLOW.CREATED has no actors.user so NO_USER is the normal outcome there, not an error.
+export async function fetchPingUser(logEvent: any, env: PingEnv, token: string | null): Promise<string> {
+  const user = logEvent?.actors?.user?.id;
   if (!user || !token) {
-    return 'UNABLE_TO_FIND_PING_USER';
+    return NO_USER;
   }
   const res = await fetch(
     `https://api.pingone.com/v1/environments/${env.id}/users/${user}`,
@@ -41,11 +59,21 @@ export async function fetchPingUser(logEvent: any, env: PingEnv, token: string |
   );
   if (!res.ok) {
     console.error(`PingOne user lookup failed for ${user}: HTTP ${res.status}`);
-    return 'unableToGetPingId';
+    return LOOKUP_FAILED;
   }
 
   const json: any = await res.json();
-  return json?.ssoUUID ?? 'UNABLE_TO_FIND_SSO_UUID';
+  return json?.ssoUUID ?? NO_SSO_UUID;
+}
+
+// distinct_id is sso_uuid
+//
+// FLOW.CREATED has no user, it falls back to flow's transaction id. 
+// CANNOT be step 1 of funnel with user-keyed events — count abandonment by count(FLOW.CREATED) - count(FLOW.DELETED) grouped by transaction_id
+function resolveDistinctId(ssoUUID: string, pingUserId?: string, transactionId?: string): string {
+  if (!SSO_UUID_SENTINELS.includes(ssoUUID)) return ssoUUID;
+  const searched = pingUserId ?? transactionId;
+  return searched ? `${ssoUUID}:${searched}` : ssoUUID;
 }
 
 
@@ -53,36 +81,43 @@ export async function fetchPingUser(logEvent: any, env: PingEnv, token: string |
 
 // transform a Ping log  into a Mixpanel /import event body.
 export async function transformToMixpanel(event: any, pingEnv?: PingEnv, pingToken?: string | null): Promise<any> {
-  const user = event.actors.user;
-  const client = event.actors.client; // the requesting app (relying party)
-  const ssoUUID = await fetchPingUser(event, pingEnv!, pingToken!); 
+
+  const user = event?.actors?.user ?? 'none';
+  const client = event?.actors?.client; // the requesting app (relying party)
+  const ssoUUID = await fetchPingUser(event, pingEnv!, pingToken!);
 
   const direction = resolveDirection(client?.id, pingEnv);
+  const transactionId = event?.internalCorrelation?.transactionId;
+  const flowId = (event?.resources ?? []).find((r: any) => r?.type === 'FLOW')?.id;
+  //not sure???
 
   return {
     // SYSTEM.DIRECTION.ACTION_TYPE
-    event: `PING.${direction}.${event.action.type}`,
+    event: `PING.${direction}.${event?.action?.type}`,
     properties: {
       // Mixpanel required fields
       time: Math.floor(Date.parse(event.recordedAt) / 1000),
-      // correlationId is stable across the events in one flow (Okta groups login by externalSessionId)
-      distinct_id: event.correlationId ?? event.internalCorrelation?.transactionId ?? user.id,
+      distinct_id: resolveDistinctId(ssoUUID, user?.id, transactionId),
       $insert_id: event.id, // stable Ping event id doubles as the dedup key
 
       // requested attributes
-      environment_id: user.environment.id,
+      environment_id: user?.environment?.id ?? client?.environment?.id ?? null,
       environment_name: pingEnv?.name ?? null,
-      user_ping_id: user.id,
-      ssoUUID: ssoUUID ?? 'UNABLE_TO_FIND_SSO_UUID',
+      user_ping_id: user?.id ?? null,
+      sso_uuid: ssoUUID,
       // user_name: user.name, // opaque id, not necessarily an email
-      action_type: event.action.type,
-      action_description: event.action.description,
+      action_type: event?.action?.type ?? null,
+      action_description: event?.action?.description ?? null,
       direction,
       // The accessed resource on an ACCESS event is the service-provider app.
       app_name: client?.name ?? null,
       app_id: client?.id ?? null,
-      result_status: event.result.status,
+      result_status: event?.result?.status ?? null,
+      result_description: event?.result?.description ?? null,
       ping_timestamp: event.recordedAt,
+      // correlationId is per-EVENT, not per-flow 
+      transaction_id: transactionId ?? null,
+      flow_id: flowId ?? null,
       correlation_id: event.correlationId
     }
   };

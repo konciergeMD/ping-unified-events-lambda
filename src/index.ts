@@ -1,5 +1,5 @@
 import { AcpAmpTransport, AlfLogger, AlfLoggerContextBuilder, LogFactory } from '@acp/common-logging';
-import { isAccessEvent, sendToMixpanel, transformToMixpanel } from './transform';
+import { isTrackedEvent, sendToMixpanel, transformToMixpanel } from './transform';
 import { loadPingEnv, PingEnv } from './config';
 import { fetchPingToken } from './util';
 
@@ -17,7 +17,7 @@ const logger = logFactory.buildLogger(AlfLogger, new AlfLoggerContextBuilder().b
 export const handler = async (event: any) => {
   logger.info(`Received Ping event: ${JSON.stringify(event)}`);
 
-  if (!isAccessEvent(event)) {
+  if (!isTrackedEvent(event)) {
     logger.info(`Ignoring other event type: ${event?.action?.type}`);
     return {
       statusCode: 200,
