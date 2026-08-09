@@ -45,25 +45,34 @@ const SSO_UUID_SENTINELS = [NO_USER, LOOKUP_FAILED, NO_SSO_UUID];
 
 // Use Ping ID to find sso_uuid.
 // FLOW.CREATED has no actors.user so NO_USER is the normal outcome there, not an error.
+// Every failure returns a sentinel rather than throwing, so the transform and the Mixpanel
+// post still proceed. An uncaught throw here would escape the handler and make EventBridge
+// retry an event that will never succeed.
 export async function fetchPingUser(logEvent: any, env: PingEnv, token: string | null): Promise<string> {
   const user = logEvent?.actors?.user?.id;
   if (!user || !token) {
     return NO_USER;
   }
-  const res = await fetch(
-    `https://api.pingone.com/v1/environments/${env.id}/users/${user}`,
-    {
-      method: 'GET',
-      headers: { Authorization: `Bearer ${token}` }
+  try {
+    const res = await fetch(
+      `https://api.pingone.com/v1/environments/${env.id}/users/${user}`,
+      {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${token}` }
+      }
+    );
+    if (!res.ok) {
+      console.error(`PingOne user lookup failed for ${user}: HTTP ${res.status}`);
+      return LOOKUP_FAILED;
     }
-  );
-  if (!res.ok) {
-    console.error(`PingOne user lookup failed for ${user}: HTTP ${res.status}`);
+
+    const json: any = await res.json();
+    return json?.ssoUUID ?? NO_SSO_UUID;
+  } catch (error) {
+    // Network failure, or a body that isn't JSON.
+    console.error(`Could not fetch PingOne user ${user}: ${error}`);
     return LOOKUP_FAILED;
   }
-
-  const json: any = await res.json();
-  return json?.ssoUUID ?? NO_SSO_UUID;
 }
 
 // distinct_id is sso_uuid

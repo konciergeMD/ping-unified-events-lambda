@@ -14,8 +14,14 @@ logFactory.addTransport(acpTransport);
 const logger = logFactory.buildLogger(AlfLogger, new AlfLoggerContextBuilder().build());
 
 
+// Raw payloads carry PII (email, IP, geolocation, user agent). Useful while testing, never
+// in prod — so the dump is gated on the deployment environment rather than removed.
+const LOG_RAW_EVENTS = process.env.Environment !== 'prod';
+
 export const handler = async (event: any) => {
-  logger.info(`Received Ping event: ${JSON.stringify(event)}`);
+  if (LOG_RAW_EVENTS) {
+    logger.info(`Received Ping event: ${JSON.stringify(event)}`);
+  }
 
   if (!isTrackedEvent(event)) {
     logger.info(`Ignoring other event type: ${event?.action?.type}`);
