@@ -82,14 +82,18 @@ function resolveDistinctId(ssoUUID: string, pingUserId?: string, transactionId?:
 // transform a Ping log  into a Mixpanel /import event body.
 export async function transformToMixpanel(event: any, pingEnv?: PingEnv, pingToken?: string | null): Promise<any> {
 
-  const user = event?.actors?.user ?? 'none';
+  // FLOW.CREATED carries no actors.user, so leave this undefined rather than defaulting to a
+  // string — every read below is optional-chained and a string would silently answer
+  // undefined to `.id`/`.environment` instead of being an honest absence.
+  const user = event?.actors?.user;
   const client = event?.actors?.client; // the requesting app (relying party)
   const ssoUUID = await fetchPingUser(event, pingEnv!, pingToken!);
 
   const direction = resolveDirection(client?.id, pingEnv);
   const transactionId = event?.internalCorrelation?.transactionId;
+  // The FLOW resource groups the events of one sign-on flow. Present on FLOW.* events; absent
+  // on USER.ACCESS_* (whose resources[] holds the USER instead), hence null there.
   const flowId = (event?.resources ?? []).find((r: any) => r?.type === 'FLOW')?.id;
-  //not sure???
 
   return {
     // SYSTEM.DIRECTION.ACTION_TYPE

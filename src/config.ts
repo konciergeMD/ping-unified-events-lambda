@@ -27,16 +27,23 @@ export const PING_ENVIRONMENTS: Record<string, PingEnv> = {
     secretId: '/identity/lambda/unified-migration-event-svc/test',
     // if accessed resource is one of these apps, the event is an outbound sso (app calls back to okta)
     outboundApps: [
-      '71d1203c-28c0-4814-8e79-2259d261b23e', // legacy/unverified — kept, harmless if unused
+      '71d1203c-28c0-4814-8e79-2259d261b23e', // Nonprod - Unified Transcarent - Outbound SSO Proxy
       '5666a895-f092-4658-a851-9d5aa458a65b' // TC Okta Outbound SSO (Ping SAML app) — the Ping→Okta outbound federation app
     ],
     // if accessed resource is one of these apps, the event is an inbound sso (app goes to portal)
+    // Inbound confirmed 2026-08-09: an external IdP → Okta → Ping login lands on the Web App
+    // below and runs Ping's Single_Factor policy (NOT Inbound-Federation-SSO, which gets zero
+    // hits) — see README "Single_Factor is a temporary discriminator".
     inboundApps: [
       '60e1487c-366f-4148-a20f-40ba6f2bcc2e', // TC Okta (Ping external IdP) — the Okta→Ping inbound federation object
       '6563a2eb-cfcb-4d5c-acc7-000551d6f7be', // Android
-      '5566e1f4-49cb-4a99-9043-d43b729f7671', // Web (Unified Transcarent Web App)
+      '5566e1f4-49cb-4a99-9043-d43b729f7671', // Web (Unified Transcarent Web App) — confirmed inbound landing app
       '58e7d1ac-1b67-4ed9-8713-27d749b414cb'  // iOS
     ],
+    // TODO the "Track Proxy SSO" webhook is scoped to 7 applications, but only the 6 ids above
+    // are mapped. "Unified Transcarent" and "External Partner Test" have no entry, so their
+    // events arrive and are emitted as PING.unknown_direction.* — add their ids and a
+    // direction. "External Partner Test" is likely the inbound origination app.
     pingClientId: '23b05b34-f49c-468c-bd25-094ce833fe87'
   },
   prod: {
