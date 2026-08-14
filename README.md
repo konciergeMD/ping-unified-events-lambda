@@ -151,31 +151,65 @@ encrypted with the default `alias/aws/ssm` key.
 
 ## Open items / TODO
 
-1. **Confirm the real `action.type` strings from CloudWatch.** The webhook UI lists Flow
-   Events as "Flow Started / Flow Updated / **Flow Completed**", but a real payload carried
-   `FLOW.DELETED` with description "Sign-on flow finished". If "Flow Completed" is actually a
-   separate `FLOW.COMPLETED` type, **`TRACKED_EVENT_TYPES` misses every flow-finished event
-   and abandonment reads as 100%**. The webhook is also subscribed to *Flow Execution Events*,
-   which the PingOne docs don't clearly distinguish from Flow Events.
-   `index.ts` already logs `Ignoring other event type: <action.type>` for every untracked
-   delivery — one real login, then grep that lambda's CloudWatch group, enumerates exactly
-   what arrives and settles both questions. Do this before trusting any funnel numbers.
-2. **Map the two unlisted webhook applications.** The "Track Proxy SSO" webhook is scoped to
+1. **Map the two unlisted webhook applications.** The "Track Proxy SSO" webhook is scoped to
    7 apps; `config.ts` maps 6 ids. **"Unified Transcarent"** and **"External Partner Test"**
    have no entry, so their events emit as `PING.unknown_direction.*`. "External Partner Test"
    is likely the inbound origination app. Add both ids with a direction.
-3. **Narrow the EventBridge rule.** It still catches all events for this Ping environment,
+2. **Narrow the EventBridge rule.** It still catches all events for this Ping environment,
    unfiltered by `action.type` — the in-Lambda `isTrackedEvent()` gate is the only filter, so
    every ignored event still costs an invocation. Now that Flow and Session events are
    subscribed, that volume is much higher than when this was written.
-4. Ensure the **prod** Secrets Manager secret
-   (`/identity/lambda/unified-migration-event-svc/prod`, account `063473290800`)
-   exists and confirm prod routing once the prod Mixpanel key is available.
+3. **Map the prod outbound SSO proxy app.** `config.ts` prod `outboundApps` has only
+   "TC Okta Outbound SSO" (`c695c059-…`); test3 also has a "Nonprod - Unified Transcarent -
+   Outbound SSO Proxy". If prod has an equivalent, its events emit as
+   `PING.unknown_direction.*` until the id is added.
+4. **No DLQ or failure destination.** A Mixpanel failure rethrows from the handler
+   (`src/index.ts`), EventBridge retries, and the event is then dropped with no record.
+   Accepted for now — deliberately deferred, not blocked. Adding a DLQ (or an
+   `EventInvokeConfig` failure destination) plus an alarm on its depth is the fix.
+5. **Nothing publishes custom metrics.** `template.yml` grants
+   `cloudwatch:PutMetricData` on `${SystemName}/custom_metrics` but no code uses it, so
+   there is no signal to alarm on beyond Lambda's built-in `Errors`/`Throttles`.
+
+### Prod prerequisites (status)
+
+- **Secrets** — `/identity/lambda/unified-migration-event-svc/prod` (account `063473290800`)
+  holds the prod `mixpanelToken` and `pingClientSecret`. ✅ Done.
+- **EventBridge** — bus `identity-ping-events-prod` and rule
+  `identity-ping-unified-event-trigger-rule-prod` are defined in `identity-infra`
+  (`lib/config.ts`, `lib/identityEventBusRulesStack.ts`) and match the ARN hardcoded in
+  this repo's `ConfigLambdaPermission`. ✅ Done.
+- **Ping client role** — the prod Logging Client (`6f4c12cf-…`) needs a role granting user
+  read on the prod env, or `fetchPingUser` returns a sentinel and every prod event gets a
+  sentinel `distinct_id`. Verify.
+- **`ssoUUID` populated on prod Ping users** — same failure mode. Verify.
+- **Webhook endpoint URL** — the prod and nonprod webhooks in
+  `terraform-tc/pingidentity/*/pingone/webhooks/log-ingestion/terragrunt.hcl` share one
+  hardcoded API Gateway host (`8a5tesyg70`), which is not the test gateway
+  (`ed1cm24iu0`). One of the two is pointed at the wrong environment. Owned by
+  `terraform-tc`, not this repo. Its `x-api-key` is also a console-set placeholder in
+  Terraform, so prod needs the real key set manually.
 
 ### Resolved
 
+All of the below were settled from CloudWatch on 2026-08-09 with the new code deployed.
+
+- ~~Confirm the real `action.type` strings.~~ The webhook UI's "Flow Completed" **is**
+  `FLOW.DELETED` — there is no `FLOW.COMPLETED`, so `TRACKED_EVENT_TYPES` is correct as
+  written. Session events are `SESSION.CREATED`/`SESSION.UPDATED` (received, ignored).
+  **No `FLOW_EXECUTION.*` event ever fired**, so the Flow vs Flow Execution ambiguity is
+  moot for these apps.
+- ~~Does `transactionId` span `FLOW.CREATED` → `FLOW.DELETED`?~~ **Yes** — both carried
+  `8fac0627-8122-475f-9f8f-094aa6155c10`. Abandonment can be grouped by `transaction_id`.
+  Note `USER.ACCESS_ALLOWED` has its **own** transaction id, so ACCESS events join to a flow
+  only via `sso_uuid` + time window, not `transaction_id`.
+- ~~Is `ssoUUID` top-level on the PingOne user object?~~ **Yes.** `json?.ssoUUID` is the
+  correct path; it returns e.g. `ssopt|ed091ca6-c2c8-4b46-ae16-cee50b500b14`.
 - ~~Unify the SSO identifier property + `distinct_id`.~~ Done — this lambda now emits
-  `sso_uuid` and keys `distinct_id` on it, matching the Okta lambda.
+  `sso_uuid` and keys `distinct_id` on it, matching the Okta lambda. Verified live:
+  `FLOW.DELETED` and `USER.ACCESS_ALLOWED` both carry the real `sso_uuid`, and
+  `FLOW.CREATED` correctly falls back to `unable to find ping user:<transactionId>` because
+  it has no user.
 - ~~Confirm a correlation key back to Okta's AuthnRequest ID.~~ Answered, negatively:
   Ping's `correlationId` and Okta's `authnRequestId` were confirmed **not** to match, and
   `correlationId` is per-event rather than per-flow. There is **no shared session/flow key**

@@ -50,9 +50,16 @@ export const PING_ENVIRONMENTS: Record<string, PingEnv> = {
     id: 'c4d8d0fc-156e-4938-8671-b725f085d585',
     name: 'Prod Unified',
     secretId: '/identity/lambda/unified-migration-event-svc/prod',
-    outboundApps: [],
-    inboundApps: [],
-    pingClientId: ''
+    // TODO: prod outbound SSO proxy / TC Okta outbound SAML app ids not yet collected —
+    // until they are here, outbound events emit as PING.unknown_direction.*
+    outboundApps: ['c695c059-7d72-42e5-91d0-e841b97a407c'], //TC Okta Outbound SSO
+    inboundApps: [
+      'e9e0e9e0-feb8-47fd-93c8-4dd319a4501e', // TC Okta (Ping external IdP) — inbound SAML IdP trusting prod-tc Okta
+      '06b50525-08dd-4a4c-91da-8ed604f76b35', // Unified Transcarent Android App
+      '7f71ab98-905f-4859-bc88-de7bcc8e69f6', // Unified Transcarent Web App
+      '6fbd61bd-5ff4-4840-a17a-b0123de7cb52'  // Unified Transcarent iOS App
+    ],
+    pingClientId: '6f4c12cf-db01-4d1f-bc92-7574acb0cc66'
   }
 };
 
