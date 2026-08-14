@@ -48,9 +48,62 @@ redirect.
 
 ## Mixpanel
 
-The Lambda filters for `USER.ACCESS_ALLOWED`/`USER.ACCESS_DENIED`, transforms the event
-into a Mixpanel event body, and POSTs it to `https://api.mixpanel.com/import?strict=1`
-Routing is by **Ping environment id**:
+The Lambda filters for the tracked action types (`src/transform.ts` →
+`TRACKED_EVENT_TYPES`), transforms the event into a Mixpanel event body, and POSTs it to
+`https://api.mixpanel.com/import?strict=1`. Routing is by **Ping environment id**.
+
+### Tracked events
+
+| `action.type` | Audit-log wording | Why |
+|---|---|---|
+| `FLOW.CREATED` | "Sign-on flow started" | The **only** signal that an outbound attempt reached Ping. Okta logs nothing between sending its AuthnRequest and getting a response, so a user who abandons on Ping's login page leaves zero trace on the Okta side. |
+| `FLOW.DELETED` | "Sign-on flow finished" | How the flow ended — `result.status` / `result.description`. |
+| `USER.ACCESS_ALLOWED` | "User Access Allowed" | The app was actually reached. Also the only event when a user arrives on an existing Ping session with no sign-on flow at all. |
+| `USER.ACCESS_DENIED` | "User Access Denied" | Live — observed with `result.status FAILED`, "Failed role access control". |
+
+**Not tracked:** `FLOW.UPDATED` ("Sign-on flow continued") duplicates `FLOW.DELETED` in the
+same second with an identical description, and a multi-step flow emits several of them, so
+its count isn't stable per flow. Session Created/Updated are subscribed on the webhook but
+ignored here.
+
+### Mixpanel identity
+
+`distinct_id` is **`sso_uuid`** — the identity shared with the Okta lambda's events, and the
+only field enriched into both systems, so it is what joins them into one funnel.
+`correlation_id`, `transaction_id` and `flow_id` are kept as properties.
+
+Three things follow, all confirmed against real payloads:
+
+- **A bare failure sentinel must never be the `distinct_id`.** `resolveDistinctId()` appends
+  the value that was searched on. Without that, every unresolved event across every user
+  collapses into one Mixpanel profile and shows phantom conversions between unrelated people.
+- **`FLOW.CREATED` carries no `actors.user`** — confirmed in both raw payloads and audit
+  exports, where "Sign-on flow started" rows have an empty user identity. Its `distinct_id`
+  therefore falls back to the flow's transaction id, so **it cannot be step 1 of a funnel with
+  the user-keyed events** — such a funnel reads 0% conversion. Measure abandonment as
+  `count(FLOW.CREATED) − count(FLOW.DELETED)`.
+- **`correlationId` is per-event, not per-flow.** Two events from the same flow carry
+  different `correlationId`s while sharing `internalCorrelation.transactionId` and the `FLOW`
+  resource id. Constrain funnel steps on `transaction_id` (or `flow_id`), never
+  `correlation_id`.
+
+### Direction
+
+Events are named `PING.<direction>.<action.type>`. Direction comes from matching
+`actors.client.id` against `outboundApps`/`inboundApps` in `config.ts`; an unmatched app
+yields `unknown_direction` (a single token, so the event name has no spaces).
+
+> #### ⚠️ `Single_Factor` is a temporary discriminator
+>
+> Inbound federated SSO runs through Ping's **`Single_Factor`** policy, not
+> `Inbound-Federation-SSO` (which real audit logs show getting zero hits). The policy name
+> arrives in `action_description`, e.g. `"Sign-on flow started with policies [Single_Factor]"`.
+>
+> **Today `Single_Factor` is used only for federated SSO, so filtering on it works and is fine
+> for shipping.** But it is the default policy — as soon as it also serves anything else (a
+> plain password login to the same app), it stops isolating federated SSO and **a new
+> discriminator is required**. Accepted deliberately: this is a temp service that needs to be
+> up quickly.
 
 ### Secrets (AWS Secrets Manager)
 
@@ -68,15 +121,98 @@ aws secretsmanager get-secret-value \
 The Lambda's IAM policy (see `template.yml`) grants `secretsmanager:GetSecretValue`
 on `/identity/lambda/unified-migration-event-svc/*`.
 
+### PingOne token cache (SSM Parameter Store)
+
+To look up the user's `ssoUUID`, the Lambda needs a PingOne `client_credentials`
+access token. That token has a real TTL, so instead of
+fetching one per event, `fetchPingToken` (`src/util.ts`) caches it in two layers:
+
+- **warm-container memory:** a module-scope map, reused for the life of the
+  execution environment.
+- **SSM Parameter Store (SecureString):** shared across all concurrent
+  containers, so a token fetched by one is reused by the others. One parameter
+  per Ping environment id:
+
+```sh
+aws ssm get-parameter \
+  --region us-east-1 \
+  --name /identity/lambda/ping-unified-events-svc/ping-token/<pingEnvId> \
+  --with-decryption --query Parameter.Value --output text
+```
+
+On a miss/near-expiry a single caller gets a new token from PingOne and
+writes it to Parameter Store. PingOne token calls drop from one-per-event to
+roughly one per TTL window.
+
+The parameter is **created on first write** (`PutParameter`, `Overwrite=true`) —
+nothing to pre-provision. The IAM policy grants `ssm:GetParameter`/`ssm:PutParameter`
+on `/identity/lambda/ping-unified-events-svc/ping-token/*`, and the value is
+encrypted with the default `alias/aws/ssm` key.
+
 ## Open items / TODO
 
-1. Narrow the EventBridge rule to `USER.ACCESS_ALLOWED`/`USER.ACCESS_DENIED` only — the
-   rule currently catches all events for this Ping environment, unfiltered by
-   `action.type`.
-2. Ensure the **prod** Secrets Manager secret
-   (`/identity/lambda/unified-migration-event-svc/prod`, account `063473290800`)
-   exists and confirm prod routing once the prod Mixpanel key is available.
-3. Confirm a correlation key — need a field on the real access event that
-   ties back to Okta's AuthnRequest ID (`InResponseTo`). Candidates:
-   `correlationId`, `internalCorrelation.sessionId`. Needed to stitch the
-   full login funnel per attempt.
+1. **Map the two unlisted webhook applications.** The "Track Proxy SSO" webhook is scoped to
+   7 apps; `config.ts` maps 6 ids. **"Unified Transcarent"** and **"External Partner Test"**
+   have no entry, so their events emit as `PING.unknown_direction.*`. "External Partner Test"
+   is likely the inbound origination app. Add both ids with a direction.
+2. **Narrow the EventBridge rule.** It still catches all events for this Ping environment,
+   unfiltered by `action.type` — the in-Lambda `isTrackedEvent()` gate is the only filter, so
+   every ignored event still costs an invocation. Now that Flow and Session events are
+   subscribed, that volume is much higher than when this was written.
+3. **Map the prod outbound SSO proxy app.** `config.ts` prod `outboundApps` has only
+   "TC Okta Outbound SSO" (`c695c059-…`); test3 also has a "Nonprod - Unified Transcarent -
+   Outbound SSO Proxy". If prod has an equivalent, its events emit as
+   `PING.unknown_direction.*` until the id is added.
+4. **No DLQ or failure destination.** A Mixpanel failure rethrows from the handler
+   (`src/index.ts`), EventBridge retries, and the event is then dropped with no record.
+   Accepted for now — deliberately deferred, not blocked. Adding a DLQ (or an
+   `EventInvokeConfig` failure destination) plus an alarm on its depth is the fix.
+5. **Nothing publishes custom metrics.** `template.yml` grants
+   `cloudwatch:PutMetricData` on `${SystemName}/custom_metrics` but no code uses it, so
+   there is no signal to alarm on beyond Lambda's built-in `Errors`/`Throttles`.
+
+### Prod prerequisites (status)
+
+- **Secrets** — `/identity/lambda/unified-migration-event-svc/prod` (account `063473290800`)
+  holds the prod `mixpanelToken` and `pingClientSecret`. ✅ Done.
+- **EventBridge** — bus `identity-ping-events-prod` and rule
+  `identity-ping-unified-event-trigger-rule-prod` are defined in `identity-infra`
+  (`lib/config.ts`, `lib/identityEventBusRulesStack.ts`) and match the ARN hardcoded in
+  this repo's `ConfigLambdaPermission`. ✅ Done.
+- **Ping client role** — the prod Logging Client (`6f4c12cf-…`) needs a role granting user
+  read on the prod env, or `fetchPingUser` returns a sentinel and every prod event gets a
+  sentinel `distinct_id`. Verify.
+- **`ssoUUID` populated on prod Ping users** — same failure mode. Verify.
+- **Webhook endpoint URL** — the prod and nonprod webhooks in
+  `terraform-tc/pingidentity/*/pingone/webhooks/log-ingestion/terragrunt.hcl` share one
+  hardcoded API Gateway host (`8a5tesyg70`), which is not the test gateway
+  (`ed1cm24iu0`). One of the two is pointed at the wrong environment. Owned by
+  `terraform-tc`, not this repo. Its `x-api-key` is also a console-set placeholder in
+  Terraform, so prod needs the real key set manually.
+
+### Resolved
+
+All of the below were settled from CloudWatch on 2026-08-09 with the new code deployed.
+
+- ~~Confirm the real `action.type` strings.~~ The webhook UI's "Flow Completed" **is**
+  `FLOW.DELETED` — there is no `FLOW.COMPLETED`, so `TRACKED_EVENT_TYPES` is correct as
+  written. Session events are `SESSION.CREATED`/`SESSION.UPDATED` (received, ignored).
+  **No `FLOW_EXECUTION.*` event ever fired**, so the Flow vs Flow Execution ambiguity is
+  moot for these apps.
+- ~~Does `transactionId` span `FLOW.CREATED` → `FLOW.DELETED`?~~ **Yes** — both carried
+  `8fac0627-8122-475f-9f8f-094aa6155c10`. Abandonment can be grouped by `transaction_id`.
+  Note `USER.ACCESS_ALLOWED` has its **own** transaction id, so ACCESS events join to a flow
+  only via `sso_uuid` + time window, not `transaction_id`.
+- ~~Is `ssoUUID` top-level on the PingOne user object?~~ **Yes.** `json?.ssoUUID` is the
+  correct path; it returns e.g. `ssopt|ed091ca6-c2c8-4b46-ae16-cee50b500b14`.
+- ~~Unify the SSO identifier property + `distinct_id`.~~ Done — this lambda now emits
+  `sso_uuid` and keys `distinct_id` on it, matching the Okta lambda. Verified live:
+  `FLOW.DELETED` and `USER.ACCESS_ALLOWED` both carry the real `sso_uuid`, and
+  `FLOW.CREATED` correctly falls back to `unable to find ping user:<transactionId>` because
+  it has no user.
+- ~~Confirm a correlation key back to Okta's AuthnRequest ID.~~ Answered, negatively:
+  Ping's `correlationId` and Okta's `authnRequestId` were confirmed **not** to match, and
+  `correlationId` is per-event rather than per-flow. There is **no shared session/flow key**
+  between the two systems. `sso_uuid` is the only cross-system join, so cross-system step
+  correlation is user + time window only. Within Ping, group on `transaction_id`/`flow_id`;
+  within Okta, on `okta_session_id`/`okta_transaction_id`.

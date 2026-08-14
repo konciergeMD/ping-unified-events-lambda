@@ -1,5 +1,5 @@
 import { AcpAmpTransport, AlfLogger, AlfLoggerContextBuilder, LogFactory } from '@acp/common-logging';
-import { isAccessEvent, sendToMixpanel, transformToMixpanel } from './transform';
+import { isTrackedEvent, sendToMixpanel, transformToMixpanel } from './transform';
 import { loadPingEnv, PingEnv } from './config';
 import { fetchPingToken } from './util';
 
@@ -14,10 +14,16 @@ logFactory.addTransport(acpTransport);
 const logger = logFactory.buildLogger(AlfLogger, new AlfLoggerContextBuilder().build());
 
 
-export const handler = async (event: any) => {
-  logger.info(`Received Ping event: ${JSON.stringify(event)}`);
+// Raw payloads carry PII (email, IP, geolocation, user agent). Useful while testing, never
+// in prod — so the dump is gated on the deployment environment rather than removed.
+const LOG_RAW_EVENTS = process.env.Environment !== 'prod';
 
-  if (!isAccessEvent(event)) {
+export const handler = async (event: any) => {
+  if (LOG_RAW_EVENTS) {
+    logger.info(`Received Ping event: ${JSON.stringify(event)}`);
+  }
+
+  if (!isTrackedEvent(event)) {
     logger.info(`Ignoring other event type: ${event?.action?.type}`);
     return {
       statusCode: 200,
