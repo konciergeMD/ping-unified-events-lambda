@@ -31,11 +31,6 @@ export const PING_ENVIRONMENTS: Record<string, PingEnv> = {
       '5666a895-f092-4658-a851-9d5aa458a65b' // TC Okta Outbound SSO (Ping SAML app) — the Ping→Okta outbound federation app
     ],
     // if accessed resource is one of these apps, the event is an inbound sso (app goes to portal)
-    // Inbound confirmed 2026-08-09: an external IdP → Okta → Ping login lands on the Web App
-    // below and runs Ping's Single_Factor policy (NOT Inbound-Federation-SSO, which gets zero
-    // hits) — see README "Single_Factor is a temporary discriminator".
-    // Mobile (Android 6563a2eb-…, iOS 58e7d1ac-…) deliberately NOT listed: mobile apps don't
-    // participate in inbound SSO, only Web does. Listing them would label their events inbound.
     inboundApps: [
       '60e1487c-366f-4148-a20f-40ba6f2bcc2e', // TC Okta (Ping external IdP) — the Okta→Ping inbound federation object
       '5566e1f4-49cb-4a99-9043-d43b729f7671'  // Web (Unified Transcarent Web App) — confirmed inbound landing app

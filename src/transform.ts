@@ -1,16 +1,14 @@
 import { Direction, PingEnv, directionByAppId } from './config';
 
-// FLOW.CREATED ("Sign-on flow started") the ONLY signal that outbound attempt reached ping
+// FLOW.CREATED ("Sign-on flow started") may be the only sign that failed outbound attempt reached ping
 // Okta doesnt log unitl getting a response, so abandoned at Ping leaves no proof 
-// FLOW.DELETED ("Sign-on flow finished") — result.status/description carry is outcome
+// FLOW.DELETED ("Sign-on flow finished") — result.status/description carry is outcome????
 //
-// FLOW.UPDATED ("Sign-on flow continued") is deliberately NOT tracked: real audit rows show
-// it duplicating FLOW.DELETED in the same second with an identical description.
-// check this - do all send both?
+// FLOW.UPDATED ("Sign-on flow continued") is deliberately NOT tracked??? it duplicates FLOW.DELETED in the same second with an identical description.
 //
 // USER.ACCESS_* confirm the app was actually reached, fire when a user reaches the app on an existing session with no sign-on flow 
 
-export const TRACKED_EVENT_TYPES = [
+export const TRACKED_EVENT_TYPES = [// all???
   'FLOW.CREATED',
   'FLOW.DELETED',
   'USER.ACCESS_ALLOWED',
@@ -45,9 +43,8 @@ const SSO_UUID_SENTINELS = [NO_USER, LOOKUP_FAILED, NO_SSO_UUID];
 
 // Use Ping ID to find sso_uuid.
 // FLOW.CREATED has no actors.user so NO_USER is the normal outcome there, not an error.
-// Every failure returns a sentinel rather than throwing, so the transform and the Mixpanel
-// post still proceed. An uncaught throw here would escape the handler and make EventBridge
-// retry an event that will never succeed.
+// Every failure returns a fill-in rather than throwing, so the transform and the Mixpanel
+// post still proceed. 
 export async function fetchPingUser(logEvent: any, env: PingEnv, token: string | null): Promise<string> {
   const user = logEvent?.actors?.user?.id;
   if (!user || !token) {
@@ -86,13 +83,10 @@ function resolveDistinctId(ssoUUID: string, pingUserId?: string, transactionId?:
 }
 
 
-
-
 // transform a Ping log  into a Mixpanel /import event body.
 export async function transformToMixpanel(event: any, pingEnv?: PingEnv, pingToken?: string | null): Promise<any> {
 
-  // FLOW.CREATED carries no actors.user, so leave this undefined rather than defaulting to a
-  // string — every read below is optional-chained and a string would silently answer
+  // FLOW.CREATED carries no actors.user, so leave this undefined
   // undefined to `.id`/`.environment` instead of being an honest absence.
   const user = event?.actors?.user;
   const client = event?.actors?.client; // the requesting app (relying party)
