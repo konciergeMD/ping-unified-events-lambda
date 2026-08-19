@@ -21,7 +21,7 @@ flowchart TD
     A["PingOne webhook<br/>(Unified Transcarent, test or prod)"] -->|"POST"| B["API Gateway<br/>.../identity/log/ingestion/ping-events"]
     B --> C["ping-event-log-lambda-{env}<br/>(identity-infra repo)"]
     C -->|"events:PutEvents<br/>one entry per array element"| D["EventBridge bus<br/>identity-ping-events-{env}"]
-    D -->|"matches: source=pingone.com<br/>+ resources.environment.id"| E["Rule:<br/>identity-ping-unified-event-trigger-rule-{env}<br/>(identity-infra repo)"]
+    D -->|"matches: resources.environment.id<br/>+ action.type + actors.client.id"| E["Rule:<br/>identity-ping-unified-event-trigger-rule-{env}<br/>(identity-infra repo)"]
     E -->|"lambda:InvokeFunction<br/>input: $.detail"| F["THIS REPO<br/>identity-ping-unified-events-svc-{env}"]
     F -->|"transform + POST"| I["Mixpanel /import"]
 
@@ -30,6 +30,68 @@ flowchart TD
 
     style F fill:#d4edda,stroke:#28a745,stroke-width:2px
 ```
+
+### What the EventBridge rule actually filters
+
+The rule (`createPingUnifiedLogsRule` in `identity-infra`) is **not** a catch-all. It matches
+on three things, all ANDed:
+
+- `detail.resources.environment.id` — the unified env id for the stage.
+- `detail.action.type` — an explicit list (see the warning below).
+- `detail.actors.client.id` — the configured `unifiedTranscarentApplicationIds`, applied only
+  when that list is non-empty.
+
+The `source` pattern is `[{ prefix: '' }]`, i.e. **match any source** — not `pingone.com` as
+previously documented here.
+
+Two consequences worth holding onto: the rule's app-id list is the **outer** gate on what this
+Lambda can ever see, and it is maintained in a different repo from `config.ts`. An app absent
+from the rule can never reach direction resolution no matter what `config.ts` says, and an app
+present in the rule but absent from `config.ts` lands in Mixpanel as `unknown_direction`.
+
+> ### 🚨 `FLOW.CREATED` is filtered out by the rule
+>
+> `TRACKED_EVENT_TYPES` includes `FLOW.CREATED`, but the rule's `unifiedActionTypes` list does
+> **not**. It lists `FLOW.COMPLETED`, `FLOW.DELETED`, `FLOW.STARTED`, `FLOW.UPDATED`.
+>
+> **`FLOW.STARTED` and `FLOW.COMPLETED` are not real PingOne action types.** Verified against
+> the [PingOne audit event reference][ping-events]: the only three that exist are
+> `FLOW.CREATED`, `FLOW.UPDATED`, `FLOW.DELETED`. The two bogus names are the audit UI's
+> *display labels* ("Sign-on flow started", "Flow Completed") uppercased into wire format —
+> a plausible-looking mistake that fails silently, because an EventBridge pattern listing a
+> value that never occurs simply never matches. No error, no warning.
+>
+> So the rule filters on two entries that can never match and drops the one the funnel depends
+> on.
+>
+> [ping-events]: https://developer.pingidentity.com/pingone-api/platform/reference/audit-reporting-events.html
+>
+> `FLOW.CREATED` is the only signal that an attempt reached Ping at all, and the only way to
+> see a user abandoning on Ping's login page — Okta logs nothing while it waits. Losing it
+> silently removes the first step of the outbound funnel and makes abandonment unmeasurable.
+>
+> This is a **regression**: `FLOW.CREATED` was confirmed arriving live on 2026-08-09 (see
+> Resolved), before the EventBridge rule was introduced. **Fix in `identity-infra`** —
+> `unifiedActionTypes` becomes:
+>
+> ```diff
+> - "FLOW.COMPLETED",
+>    "FLOW.DELETED",
+> - "FLOW.STARTED",
+> + "FLOW.CREATED",
+>    "FLOW.UPDATED",
+> ```
+>
+> No change is needed in this repo — `TRACKED_EVENT_TYPES` is correct as written, and all four
+> of its entries are verified real action types.
+
+`FLOW.UPDATED`, `SESSION.CREATED`, `SESSION.UPDATED` and `FLOW_EXECUTION.CREATED`/`.UPDATED`
+are admitted by the rule but dropped by `isTrackedEvent()`, so they cost an invocation each
+and produce nothing. All are real action types (unlike the two above), but `FLOW_EXECUTION.*`
+has never been observed firing for these apps.
+
+`SESSION.DELETED` is also a real type and is subscribed nowhere — the natural logout signal
+if that ever becomes interesting.
 
 ### Why the flow looks like this
 
@@ -63,8 +125,11 @@ The Lambda filters for the tracked action types (`src/transform.ts` →
 
 **Not tracked:** `FLOW.UPDATED` ("Sign-on flow continued") duplicates `FLOW.DELETED` in the
 same second with an identical description, and a multi-step flow emits several of them, so
-its count isn't stable per flow. Session Created/Updated are subscribed on the webhook but
+its count isn't stable per flow. Session Created/Updated pass the EventBridge rule but are
 ignored here.
+
+> ⚠️ `FLOW.CREATED` is tracked by this Lambda but **currently never reaches it** — the
+> EventBridge rule filters it out. See [the rule warning](#what-the-eventbridge-rule-actually-filters).
 
 ### Mixpanel identity
 
@@ -93,6 +158,46 @@ Events are named `PING.<direction>.<action.type>`. Direction comes from matching
 `actors.client.id` against `outboundApps`/`inboundApps` in `config.ts`; an unmatched app
 yields `unknown_direction` (a single token, so the event name has no spaces).
 
+Unlike the Okta lambda, there is **no kind-based fallback here** — an app that isn't in one
+of the two lists is `unknown_direction`, full stop. Direction labeling on this side is
+therefore entirely dependent on the config lists being right.
+
+> **Mobile is deliberately absent from `inboundApps`.** The Android and iOS app ids were
+> previously listed in both `test3` and `prod`, but mobile apps don't participate in inbound
+> SSO — only Web does. Any event they produced was labeled `inbound` on an app that has no
+> inbound flow. They are excluded in both environments; do not re-add them.
+>
+> **The mobile ids are still in the EventBridge rule's app filter** (`identity-infra` →
+> `unifiedTranscarentApplicationIds`, both test and prod), so mobile events still reach this
+> Lambda — they now emit as `PING.unknown_direction.USER.ACCESS_*` instead of a false
+> `inbound`. That is the correct trade (honest noise beats confident mislabeling), but the
+> cleaner fix is to also drop mobile from the rule so the events never arrive. That is a
+> product call, not a mechanical one: mobile `USER.ACCESS_ALLOWED` is real portal access, just
+> not *inbound SSO*. Decide whether it should be dropped at the rule, or kept and given its
+> own direction value rather than `unknown_direction`.
+
+| Env | List | Id | App |
+|---|---|---|---|
+| test3 | `outboundApps` | `71d1203c-…` | Nonprod - Unified Transcarent - Outbound SSO Proxy |
+| test3 | `outboundApps` | `5666a895-…` | TC Okta Outbound SSO (Ping→Okta outbound federation app) |
+| test3 | `inboundApps` | `60e1487c-…` | TC Okta — Ping external IdP, the Okta→Ping inbound federation object |
+| test3 | `inboundApps` | `5566e1f4-…` | Unified Transcarent Web App — confirmed inbound-landing app |
+| prod | `outboundApps` | `c695c059-…` | TC Okta Outbound SSO — asserts into the Okta `outboundIDPs` anchor |
+| prod | `inboundApps` | `e9e0e9e0-…` | TC Okta — inbound SAML IdP trusting prod-tc Okta |
+| prod | `inboundApps` | `7f71ab98-…` | Unified Transcarent Web App |
+
+> **The two "TC Okta" external-IdP entries are inert.** `60e1487c-…` and `e9e0e9e0-…` are in
+> `inboundApps`, but `resolveDirection()` only matches `actors.client.id`, and neither id
+> appears in the EventBridge rule's app filter — so no event that reaches this Lambda can
+> carry them as its client. They can never match. **Inbound direction rests entirely on the
+> Web app id** (`5566e1f4-…` / `7f71ab98-…`).
+>
+> That makes the Web app a discriminator with the same weakness as `Single_Factor` below: it
+> works only while every `USER.ACCESS_*` on the Web app comes from inbound SSO. An ordinary
+> portal session on the same app would be labeled `inbound` too. Confirm against a real
+> capture, and consider whether the IdP entries should be removed as dead config or whether
+> direction should key on something else.
+
 > #### ⚠️ `Single_Factor` is a temporary discriminator
 >
 > Inbound federated SSO runs through Ping's **`Single_Factor`** policy, not
@@ -120,6 +225,16 @@ aws secretsmanager get-secret-value \
 
 The Lambda's IAM policy (see `template.yml`) grants `secretsmanager:GetSecretValue`
 on `/identity/lambda/unified-migration-event-svc/*`.
+
+**The merged env is cached per Ping environment id for the container's lifetime, with no
+TTL** — secret values aren't expected to change while this logging is in use, so there is
+nothing to rotate into. That makes a *partial* secret more dangerous than a missing one: a
+missing secret throws and retries, but caching an absent field would break every invocation
+on that warm container with no further Secrets Manager call, until it happened to cold-start.
+`loadPingEnv()` therefore **validates `mixpanelToken` and `pingClientSecret` before assigning
+the cache and throws naming the missing ones**. Nothing is cached on failure, so the next
+invocation refetches and a fix to the secret is picked up immediately rather than waiting for
+a cold start.
 
 ### PingOne token cache (SSM Parameter Store)
 
@@ -151,23 +266,33 @@ encrypted with the default `alias/aws/ssm` key.
 
 ## Open items / TODO
 
-1. **Map the two unlisted webhook applications.** The "Track Proxy SSO" webhook is scoped to
-   7 apps; `config.ts` maps 6 ids. **"Unified Transcarent"** and **"External Partner Test"**
-   have no entry, so their events emit as `PING.unknown_direction.*`. "External Partner Test"
-   is likely the inbound origination app. Add both ids with a direction.
-2. **Narrow the EventBridge rule.** It still catches all events for this Ping environment,
-   unfiltered by `action.type` — the in-Lambda `isTrackedEvent()` gate is the only filter, so
-   every ignored event still costs an invocation. Now that Flow and Session events are
-   subscribed, that volume is much higher than when this was written.
-3. **Map the prod outbound SSO proxy app.** `config.ts` prod `outboundApps` has only
-   "TC Okta Outbound SSO" (`c695c059-…`); test3 also has a "Nonprod - Unified Transcarent -
-   Outbound SSO Proxy". If prod has an equivalent, its events emit as
-   `PING.unknown_direction.*` until the id is added.
-4. **No DLQ or failure destination.** A Mixpanel failure rethrows from the handler
+1. **🚨 Restore `FLOW.CREATED` to the EventBridge rule** (`identity-infra`). The rule drops it
+   and admits two action types that don't exist. Highest-impact item here — it silently
+   removes the first funnel step. Full detail under [Data flow](#what-the-eventbridge-rule-actually-filters).
+2. **Map "External Partner Test" (`47452c03-3e72-4cca-8c2e-ee39fe7c4d63`).** It is in the
+   **test** rule's app filter but has no `config.ts` entry, so its events emit as
+   `PING.unknown_direction.*`. Likely the inbound origination app, but that's a guess — confirm
+   the direction before adding it rather than assuming. There is no prod equivalent in the
+   rule. (The older note about a 7th unmapped "Unified Transcarent" app is superseded: the
+   rule's test list has exactly six ids, all accounted for.)
+3. **Decide what mobile should do.** Android/iOS are out of `inboundApps` but still in the
+   rule's app filter, so they arrive and emit `unknown_direction` — see Direction.
+4. **The two "TC Okta" IdP ids in `inboundApps` are provably dead config** — they aren't in
+   the rule's app filter, so they can never match `actors.client.id`. Remove them, or change
+   what inbound keys on. See Direction.
+5. **Trim the rule's action types.** `FLOW.UPDATED`, `SESSION.*` and `FLOW_EXECUTION.*` are
+   forwarded and then dropped by `isTrackedEvent()`, costing an invocation each.
+   `FLOW_EXECUTION.*` has never fired and can go outright.
+6. **~~Map the prod outbound SSO proxy app~~ — likely a non-issue.** `config.ts` prod
+   `outboundApps` has only "TC Okta Outbound SSO" (`c695c059-…`), and the EventBridge rule's
+   prod app list has no proxy app either — the two agree, and the test-only "Nonprod - Unified
+   Transcarent - Outbound SSO Proxy" appears to be a nonprod-only construct. Close this once
+   someone confirms prod genuinely has no proxy app rather than one nobody has wired up.
+7. **No DLQ or failure destination.** A Mixpanel failure rethrows from the handler
    (`src/index.ts`), EventBridge retries, and the event is then dropped with no record.
    Accepted for now — deliberately deferred, not blocked. Adding a DLQ (or an
    `EventInvokeConfig` failure destination) plus an alarm on its depth is the fix.
-5. **Nothing publishes custom metrics.** `template.yml` grants
+8. **Nothing publishes custom metrics.** `template.yml` grants
    `cloudwatch:PutMetricData` on `${SystemName}/custom_metrics` but no code uses it, so
    there is no signal to alarm on beyond Lambda's built-in `Errors`/`Throttles`.
 
