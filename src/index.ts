@@ -22,8 +22,10 @@ export const handler = async (event: any) => {
     logger.info(`Received Ping event: ${JSON.stringify(event)}`);
   }
 
+  // Untracked types (AUTHENTICATION.*, DAVINCI_INTERACTION.*, ...) are the large majority of
+  // invocations, so they return silently -- the Lambda invocation count already shows the volume.
+  // The real fix is narrowing the event-type filter on the Ping event hook so these never invoke.
   if (!isTrackedEvent(event)) {
-    logger.info(`Ignoring other event type: ${event?.action?.type}`);
     return {
       statusCode: 200,
       body: JSON.stringify({ message: 'Ignored' })
@@ -60,7 +62,8 @@ export const handler = async (event: any) => {
       throw new Error(`No Mixpanel token configured for ${pingEnv.name}`);
     }
     await sendToMixpanel(mixpanelBody, token);
-    logger.info(`Sent event to Mixpanel (${pingEnv.name})`);
+    // No success line: 'Transformed event' above already marks every event that got this far,
+    // and a failure logs its own error below.
   } catch (err) {
     logger.error(`Failed to send event to Mixpanel: ${err}`);
     throw err;

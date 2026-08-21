@@ -66,8 +66,13 @@ async function writeTokenToSsm(env: PingEnv, entry: CachedToken): Promise<void> 
         Overwrite: true
       })
       .promise();
-  } catch (err) {
-    
+  } catch (err: any) {
+    // TooManyUpdates = several cold containers minted concurrently and raced on this write.
+    // Benign: a valid token still won, and each container keeps its own in-memory copy either
+    // way, so this is not worth an ERROR line.
+    if (err?.code === 'TooManyUpdates') {
+      return;
+    }
     console.error(`Failed to write Ping token to SSM: ${err}`);
   }
 }
