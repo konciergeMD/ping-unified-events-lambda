@@ -12,6 +12,9 @@ export interface PingEnv {
   secretId: string;
   outboundApps: string[];
   inboundApps: string[];
+  // The TC Okta external IdP. sso_uuid is not a user attribute -- it is the externalId on the
+  // user's account link (linkedAccounts) whose identityProvider is this IdP.
+  oktaIdpId: string;
   pingClientId: string | null;
   // populated from Secrets Manager:
   token?: string;
@@ -36,6 +39,9 @@ export const PING_ENVIRONMENTS: Record<string, PingEnv> = {
       '5566e1f4-49cb-4a99-9043-d43b729f7671'  // Web (Unified Transcarent Web App) — confirmed inbound landing app
     ],
 
+    // TC Okta external IdP — confirmed as the account-link IdP carrying ssoUUID as externalId
+    oktaIdpId: '60e1487c-366f-4148-a20f-40ba6f2bcc2e',
+
     pingClientId: '23b05b34-f49c-468c-bd25-094ce833fe87'
   },
   prod: {
@@ -48,6 +54,9 @@ export const PING_ENVIRONMENTS: Record<string, PingEnv> = {
       'e9e0e9e0-feb8-47fd-93c8-4dd319a4501e', // TC Okta (Ping external IdP) — inbound SAML IdP trusting prod-tc Okta
       '7f71ab98-905f-4859-bc88-de7bcc8e69f6'  // Unified Transcarent Web App
     ],
+    // TC Okta external IdP. NOTE: assumed to be the same object as the inbound IdP above --
+    // verify against a prod linkedAccounts response before trusting prod sso_uuid values.
+    oktaIdpId: 'e9e0e9e0-feb8-47fd-93c8-4dd319a4501e',
     pingClientId: '6f4c12cf-db01-4d1f-bc92-7574acb0cc66'
   }
 };

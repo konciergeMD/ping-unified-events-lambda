@@ -35,39 +35,64 @@ function resolveDirection(appId: string | undefined, pingEnv?: PingEnv): Resolve
   return 'unknown_direction';
 }
 
-// fill in for a failed fetch sso_uuid. 
+// fill in for a failed fetch sso_uuid.
 const NO_USER = 'unable to find ping user';
+const NO_TOKEN = 'unable to authenticate to ping';
 const LOOKUP_FAILED = 'unable to fetch ping user';
 const NO_SSO_UUID = 'unable to find sso_uuid';
-const SSO_UUID_SENTINELS = [NO_USER, LOOKUP_FAILED, NO_SSO_UUID];
+const SSO_UUID_SENTINELS = [NO_USER, NO_TOKEN, LOOKUP_FAILED, NO_SSO_UUID];
 
 // Use Ping ID to find sso_uuid.
+//
+// sso_uuid is NOT a user attribute but the externalId on the account link with TC Okta IdP, 
+// so this reads the linkedAccounts
 // FLOW.CREATED has no actors.user so NO_USER is the normal outcome there, not an error.
 // Every failure returns a fill-in rather than throwing, so the transform and the Mixpanel
-// post still proceed. 
+// post still proceed.
 export async function fetchPingUser(logEvent: any, env: PingEnv, token: string | null): Promise<string> {
   const user = logEvent?.actors?.user?.id;
-  if (!user || !token) {
+  if (!user) {
     return NO_USER;
+  }
+  // Distinguished from NO_USER so a broken client-credentials fetch is visible in Mixpanel
+  // rather than looking like a normal userless FLOW.CREATED.
+  if (!token) {
+    console.error(`No Ping token available; skipping account-link lookup for ${user}`);
+    return NO_TOKEN;
   }
   try {
     const res = await fetch(
-      `https://api.pingone.com/v1/environments/${env.id}/users/${user}`,
+      `https://api.pingone.com/v1/environments/${env.id}/users/${user}/linkedAccounts`,
       {
         method: 'GET',
         headers: { Authorization: `Bearer ${token}` }
       }
     );
     if (!res.ok) {
-      console.error(`PingOne user lookup failed for ${user}: HTTP ${res.status}`);
+      // Body carries the reason (missing scope vs. wrong environment); status alone is ambiguous.
+      const body = await res.text().catch(() => '<unreadable>');
+      console.error(
+        `PingOne account-link lookup failed for ${user}: HTTP ${res.status}: ${body.slice(0, 500)}`
+      );
       return LOOKUP_FAILED;
     }
 
     const json: any = await res.json();
-    return json?.ssoUUID ?? NO_SSO_UUID;
+    const links: any[] = json?._embedded?.linkedAccounts ?? [];
+    const oktaLink = links.find((link) => link?.identityProvider?.id === env.oktaIdpId);
+    if (!oktaLink?.externalId) {
+      // Log which IdPs the user IS linked to -- the usual cause is a configured oktaIdpId that
+      // doesn't match the IdP actually populating the link.
+      console.error(
+        `No ${env.oktaIdpId} account link for ${user}; linked IdPs: ` +
+          `${JSON.stringify(links.map((link) => link?.identityProvider?.id))}`
+      );
+      return NO_SSO_UUID;
+    }
+    return oktaLink.externalId;
   } catch (error) {
     // Network failure, or a body that isn't JSON.
-    console.error(`Could not fetch PingOne user ${user}: ${error}`);
+    console.error(`Could not fetch PingOne account links for ${user}: ${error}`);
     return LOOKUP_FAILED;
   }
 }
